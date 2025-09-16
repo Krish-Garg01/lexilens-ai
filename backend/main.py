@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, status,Form
+from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, status, Form, BackgroundTasks
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 import shutil
@@ -11,12 +11,12 @@ from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime
 
-
 # LangChain Imports (Modernized)
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
+# Local Imports
 from .database import SessionLocal, get_db
 from .models import User, Document, Analysis, create_tables
 from .auth import authenticate_user, create_access_token, get_current_user, get_password_hash
@@ -32,12 +32,7 @@ llm = None  # Initialize llm as None
 # Validate API key on startup
 if not GEMINI_API_KEY or GEMINI_API_KEY == "your-api-key-here":
     print("❌ ERROR: GEMINI_API_KEY not found or not set in .env file.")
-elif not GEMINI_API_KEY.startswith("AIza"):
-    print(f"❌ ERROR: GEMINI_API_KEY appears to be invalid (should start with 'AIza'). Current key: {GEMINI_API_KEY[:10]}...")
-elif GEMINI_API_KEY != GEMINI_API_KEY.strip():
-    print("❌ ERROR: GEMINI_API_KEY contains leading/trailing whitespace.")
 else:
-    print(f"✅ GEMINI_API_KEY format looks correct: {GEMINI_API_KEY[:10]}...")
     try:
         llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=GEMINI_API_KEY)
         print("✅ LLM initialized successfully")
@@ -48,14 +43,12 @@ else:
 # --- FastAPI Lifespan ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
     print("🚀 Starting LexiLens AI API...")
     if not create_tables():
         print("❌ Failed to create database tables.")
     else:
         print("✅ Database tables ready")
 
-    # Create default test user
     db = SessionLocal()
     try:
         if not db.query(User).filter(User.email == "test@example.com").first():
@@ -64,12 +57,9 @@ async def lifespan(app: FastAPI):
             db.add(test_user)
             db.commit()
             print("✅ Default test user created (test@example.com / test123)")
-    except Exception as e:
-        print(f"❌ Error creating test user: {str(e)}")
     finally:
         db.close()
     yield
-    # Shutdown
     print("👋 Shutting down LexiLens AI API...")
 
 # --- FastAPI App Initialization ---
@@ -80,9 +70,10 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# --- Pydantic Schemas (Response Models) ---
+# --- Pydantic Schemas ---
 class DocumentOut(BaseModel):
     id: int
+    title: str
     filename: str
     uploaded_at: datetime
     class Config: from_attributes = True
@@ -91,14 +82,8 @@ class DocumentDetail(DocumentOut):
     content: str
     analysis: Optional[dict] = None
 
-class SearchResult(BaseModel):
-    document_id: int
-    filename: str
-    snippet: str
-
-class SearchResponse(BaseModel):
-    query: str
-    results: List[SearchResult]
+class ScenarioRequest(BaseModel):
+    scenario_text: str
 
 class ScenarioResponse(BaseModel):
     scenario: str
@@ -108,12 +93,10 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str
 
-class AnalysisResponse(BaseModel):
-    overall_risk_score: float
-    high_risk_clauses: List[dict]
-    simplified_summary: str
-    processing_time: float
+class AnalyzeImmediateResponse(BaseModel):
+    message: str
     document_id: int
+    filename: str
 
 class RegisterResponse(BaseModel):
     message: str
@@ -125,12 +108,8 @@ class HealthResponse(BaseModel):
     database: str
     llm_available: bool
 
-class ScenarioRequest(BaseModel):
-    scenario_text: str
-    
 # --- Helper Functions ---
 def extract_text_from_pdf(file_path: str) -> str:
-    # ... (Your extract_text_from_pdf function remains the same)
     text = ""
     try:
         with fitz.open(file_path) as doc:
@@ -143,7 +122,6 @@ def extract_text_from_pdf(file_path: str) -> str:
                 for page in pdf.pages:
                     text += page.extract_text() or ""
         except Exception as e2:
-            print(f"pdfplumber also failed: {e2}")
             raise IOError(f"Could not extract text from PDF: {e} / {e2}")
     if not text.strip():
         raise ValueError("PDF appears to be empty or contains no extractable text")
@@ -151,32 +129,18 @@ def extract_text_from_pdf(file_path: str) -> str:
 
 def analyze_document_with_ai(text: str) -> dict:
     if llm is None:
-        return {
-            "overall_risk_score": 0.0,
-            "high_risk_clauses": [],
-            "simplified_summary": "AI analysis is unavailable due to an API key configuration issue.",
-            "processing_time": 0.0,
-            "error": "GEMINI_API_KEY not configured properly"
-        }
-    
+        return {"error": "GEMINI_API_KEY not configured properly"}
     try:
         parser = StrOutputParser()
-        # Risk Analysis Chain
         risk_prompt = PromptTemplate.from_template(
             """Analyze the following legal document for risk. Identify clauses related to Termination, Payment terms, Liability, Intellectual property, Confidentiality, and Dispute resolution. For each, provide: 'clause' (quoted text), 'risk' (High, Medium, or Low), 'confidence' (0-1 score), and 'reason'. Also, calculate an 'overall_risk_score' (0-1). Document text: {text}. Output ONLY a valid JSON object with keys: 'overall_risk_score', 'clauses' (a list of dictionaries)."""
         )
         risk_chain = risk_prompt | llm | parser
         risk_result_str = risk_chain.invoke({"text": text})
-        
-        try:
-            risk_result = json.loads(risk_result_str.strip().replace("```json", "").replace("```", ""))
-        except json.JSONDecodeError:
-            print("⚠️ Warning: Failed to parse JSON from risk analysis. Using fallback.")
-            risk_result = {"overall_risk_score": 0.5, "clauses": []}
+        risk_result = json.loads(risk_result_str.strip().replace("```json", "").replace("```", ""))
 
-        # Simplification Chain
         simplify_prompt = PromptTemplate.from_template(
-            """Simplify the following legal document into plain English. Focus on key obligations, rights, and risks. Use simple language and explain any legal terms. Document text: {text}. Provide a concise simplified summary."""
+            """Simplify the following legal document into plain English. Focus on key obligations, rights, and risks. Document text: {text}. Provide a concise simplified summary."""
         )
         simplify_chain = simplify_prompt | llm | parser
         simplified = simplify_chain.invoke({"text": text})
@@ -185,13 +149,97 @@ def analyze_document_with_ai(text: str) -> dict:
             "overall_risk_score": risk_result.get("overall_risk_score", 0.5),
             "high_risk_clauses": risk_result.get("clauses", []),
             "simplified_summary": simplified.strip(),
-            "processing_time": 5.0  # Placeholder
+            "processing_time": 5.0
         }
     except Exception as e:
         print(f"AI Analysis Error: {str(e)}")
         raise e
 
+# --- Background Task Worker ---
+def run_ai_analysis_and_save(doc_id: int, db: Session):
+    print(f"🔬 Starting background analysis for document ID: {doc_id}")
+    doc = db.query(Document).filter(Document.id == doc_id).first()
+    if not doc:
+        print(f"❌ Could not find document ID {doc_id} for background analysis.")
+        db.close()
+        return
+
+    try:
+        analysis_result = analyze_document_with_ai(doc.content)
+        analysis = Analysis(
+            document_id=doc.id,
+            overall_risk_score=analysis_result.get("overall_risk_score", 0.0),
+            high_risk_clauses=json.dumps(analysis_result.get("high_risk_clauses", [])),
+            simplified_summary=analysis_result.get("simplified_summary", ""),
+            processing_time=analysis_result.get("processing_time", 0.0)
+        )
+        db.add(analysis)
+        db.commit()
+        print(f"✅ Background analysis for document ID {doc_id} complete and saved.")
+    except Exception as e:
+        print(f"❌ Background analysis for document ID {doc_id} failed: {str(e)}")
+    finally:
+        db.close()
+
 # --- API Endpoints ---
+@app.post("/analyze", response_model=AnalyzeImmediateResponse, tags=["Analysis"])
+async def analyze_document(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    temp_path = f"temp_{file.filename}"
+    try:
+        with open(temp_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        text = extract_text_from_pdf(temp_path)
+        file_title = os.path.splitext(file.filename)[0].replace("_", " ").replace("-", " ").title()
+        
+        doc = Document(
+            title=file_title,
+            filename=file.filename,
+            content=text,
+            owner_id=current_user.id
+        )
+        db.add(doc)
+        db.commit()
+        db.refresh(doc)
+        
+        background_tasks.add_task(run_ai_analysis_and_save, doc.id, SessionLocal())
+        
+        return AnalyzeImmediateResponse(
+            message="Document uploaded successfully. Analysis has started in the background.",
+            document_id=doc.id,
+            filename=file.filename
+        )
+    except (IOError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+@app.post("/scenario/{document_id}", response_model=ScenarioResponse, tags=["Analysis"])
+async def analyze_scenario_for_document(
+    document_id: int,
+    request: ScenarioRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    doc = db.query(Document).filter(Document.id == document_id, Document.owner_id == current_user.id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    scenario_prompt = PromptTemplate.from_template(
+        """Analyze this legal scenario: "{scenario}"\n\nBased ONLY on the following document content, provide actionable advice and potential risks.\n\nDocument Content:\n"{content}"\n\nYour structured response should include:\n- A summary of the scenario.\n- Potential risks based on the document.\n- Recommended actions."""
+    )
+    parser = StrOutputParser()
+    scenario_chain = scenario_prompt | llm | parser
+    analysis = scenario_chain.invoke({"scenario": request.scenario_text, "content": doc.content})
+    return ScenarioResponse(scenario=request.scenario_text, analysis=analysis)
+
+# ... (Keep all your other endpoints: /register, /token, /user/documents, etc. They are correct)
 @app.get("/", tags=["General"])
 async def root():
     return {"message": "Welcome to LexiLens AI API"}
@@ -208,23 +256,16 @@ async def health_check():
 
 @app.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED, tags=["Authentication"])
 async def register(email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
-    """
-    Registers a new user with an email and password.
-    """
-    # Check if a user with that email already exists
     existing_user = db.query(User).filter(User.email == email).first()
     if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="An account with this email already exists.",
         )
-    
-    # Create the new user
     hashed_password = get_password_hash(password)
     new_user = User(email=email, hashed_password=hashed_password)
     db.add(new_user)
     db.commit()
-    
     return RegisterResponse(message="User created successfully. Please login.")
 
 
@@ -239,46 +280,6 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
         )
     access_token = create_access_token(data={"sub": user.email})
     return TokenResponse(access_token=access_token, token_type="bearer")
-
-@app.post("/analyze", response_model=AnalysisResponse, tags=["Analysis"])
-async def analyze_document(file: UploadFile = File(...), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    temp_path = f"temp_{file.filename}"
-    try:
-        with open(temp_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        text = extract_text_from_pdf(temp_path)
-        
-        # Save document to DB
-        doc = Document(filename=file.filename, content=text, owner_id=current_user.id)
-        db.add(doc)
-        db.commit()
-        db.refresh(doc)
-        
-        analysis_result = analyze_document_with_ai(text)
-        
-        # Save analysis to DB
-        analysis = Analysis(
-            document_id=doc.id,
-            overall_risk_score=analysis_result["overall_risk_score"],
-            high_risk_clauses=json.dumps(analysis_result["high_risk_clauses"]),
-            simplified_summary=analysis_result["simplified_summary"],
-            processing_time=analysis_result["processing_time"]
-        )
-        db.add(analysis)
-        db.commit()
-        
-        analysis_result["document_id"] = doc.id
-        return analysis_result
-
-    except (IOError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        print(f"Analysis endpoint error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred during analysis.")
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
 
 @app.get("/user/documents", response_model=List[DocumentOut], tags=["Documents"])
 async def get_user_documents(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -303,48 +304,6 @@ async def get_document(document_id: int, current_user: User = Depends(get_curren
     
     doc.analysis = analysis_data
     return doc
-
-@app.post("/scenario/{document_id}", response_model=ScenarioResponse, tags=["Analysis"])
-async def analyze_scenario_for_document(
-    document_id: int,
-    request: ScenarioRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Analyzes a specific what-if scenario based on the content of a single document.
-    """
-    # Fetch the specific document the user selected
-    doc = db.query(Document).filter(Document.id == document_id, Document.owner_id == current_user.id).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    scenario_prompt = PromptTemplate.from_template(
-        """
-        Analyze this legal scenario: "{scenario}"
-        
-        Based ONLY on the following document content, provide actionable advice and potential risks.
-        Refer to specific concepts within the document.
-
-        Document Content:
-        "{content}"
-        
-        Your structured response should include:
-        - A summary of the scenario.
-        - Potential risks based on the document.
-        - Recommended actions.
-        """
-    )
-    
-    parser = StrOutputParser()
-    scenario_chain = scenario_prompt | llm | parser
-    
-    analysis = scenario_chain.invoke({
-        "scenario": request.scenario_text,
-        "content": doc.content
-    })
-    
-    return ScenarioResponse(scenario=request.scenario_text, analysis=analysis)
 
 if __name__ == "__main__":
     import uvicorn

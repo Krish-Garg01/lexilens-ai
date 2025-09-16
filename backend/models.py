@@ -18,6 +18,7 @@ class User(Base):
 class Document(Base):
     __tablename__ = "documents"
     id = Column(Integer, primary_key=True, index=True)
+    title = Column(String) 
     filename = Column(String)
     content = Column(Text)
     uploaded_at = Column(DateTime, default=datetime.datetime.utcnow)
