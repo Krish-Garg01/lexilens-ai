@@ -1,64 +1,41 @@
-from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, status,Form
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 import shutil
 import os
 import fitz
 import pdfplumber
+import json
+from contextlib import asynccontextmanager
+from typing import List, Optional
+from pydantic import BaseModel
+from datetime import datetime
+
+
+# LangChain Imports (Modernized)
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
-import json
-from models import SessionLocal, User, Document, Analysis
-from auth import authenticate_user, create_access_token, get_current_user, get_password_hash
+from langchain_core.output_parsers import StrOutputParser
 
-app = FastAPI(
-    title="LexiLens AI API",
-    description="Production-Grade Legal Document Intelligence Platform API",
-    version="1.0.0"
-)
+from .database import SessionLocal, get_db
+from .models import User, Document, Analysis, create_tables
+from .auth import authenticate_user, create_access_token, get_current_user, get_password_hash
 
-@app.on_event("startup")
-async def startup_event():
-    db = SessionLocal()
-    existing_user = db.query(User).filter(User.email == "test@example.com").first()
-    if not existing_user:
-        hashed_password = get_password_hash("test123")
-        test_user = User(email="test@example.com", hashed_password=hashed_password)
-        db.add(test_user)
-        db.commit()
-        print("Default test user created")
-    db.close()
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
+# Load environment variables FIRST
 from dotenv import load_dotenv
-import os
-
 load_dotenv()
 
+# --- Gemini API Configuration ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "your-api-key-here")
+llm = None  # Initialize llm as None
 
-# Validate API key
-if GEMINI_API_KEY == "your-api-key-here" or not GEMINI_API_KEY:
-    print("❌ ERROR: GEMINI_API_KEY not found in environment variables!")
-    print("Please set GEMINI_API_KEY in your .env file")
-    llm = None
+# Validate API key on startup
+if not GEMINI_API_KEY or GEMINI_API_KEY == "your-api-key-here":
+    print("❌ ERROR: GEMINI_API_KEY not found or not set in .env file.")
 elif not GEMINI_API_KEY.startswith("AIza"):
-    print("❌ ERROR: GEMINI_API_KEY appears to be invalid (should start with 'AIza')")
-    print(f"Current key: {GEMINI_API_KEY}")
-    llm = None
+    print(f"❌ ERROR: GEMINI_API_KEY appears to be invalid (should start with 'AIza'). Current key: {GEMINI_API_KEY[:10]}...")
 elif GEMINI_API_KEY != GEMINI_API_KEY.strip():
-    print("❌ ERROR: GEMINI_API_KEY contains leading/trailing whitespace")
-    print("Please remove any spaces from the API key in your .env file")
-    llm = None
+    print("❌ ERROR: GEMINI_API_KEY contains leading/trailing whitespace.")
 else:
     print(f"✅ GEMINI_API_KEY format looks correct: {GEMINI_API_KEY[:10]}...")
     try:
@@ -66,231 +43,192 @@ else:
         print("✅ LLM initialized successfully")
     except Exception as e:
         print(f"❌ ERROR initializing LLM: {str(e)}")
-        if "API_KEY_INVALID" in str(e):
-            print("💡 The API key is invalid. Please check:")
-            print("   1. The key is copied correctly from Google AI Studio")
-            print("   2. The key hasn't expired")
-            print("   3. The key has the right permissions")
         llm = None
 
-def extract_text_from_pdf(file_path):
+# --- FastAPI Lifespan ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    print("🚀 Starting LexiLens AI API...")
+    if not create_tables():
+        print("❌ Failed to create database tables.")
+    else:
+        print("✅ Database tables ready")
+
+    # Create default test user
+    db = SessionLocal()
+    try:
+        if not db.query(User).filter(User.email == "test@example.com").first():
+            hashed_password = get_password_hash("test123")
+            test_user = User(email="test@example.com", hashed_password=hashed_password)
+            db.add(test_user)
+            db.commit()
+            print("✅ Default test user created (test@example.com / test123)")
+    except Exception as e:
+        print(f"❌ Error creating test user: {str(e)}")
+    finally:
+        db.close()
+    yield
+    # Shutdown
+    print("👋 Shutting down LexiLens AI API...")
+
+# --- FastAPI App Initialization ---
+app = FastAPI(
+    title="LexiLens AI API",
+    description="Production-Grade Legal Document Intelligence Platform API",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+# --- Pydantic Schemas (Response Models) ---
+class DocumentOut(BaseModel):
+    id: int
+    filename: str
+    uploaded_at: datetime
+    class Config: from_attributes = True
+
+class DocumentDetail(DocumentOut):
+    content: str
+    analysis: Optional[dict] = None
+
+class SearchResult(BaseModel):
+    document_id: int
+    filename: str
+    snippet: str
+
+class SearchResponse(BaseModel):
+    query: str
+    results: List[SearchResult]
+
+class ScenarioResponse(BaseModel):
+    scenario: str
+    analysis: str
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str
+
+class AnalysisResponse(BaseModel):
+    overall_risk_score: float
+    high_risk_clauses: List[dict]
+    simplified_summary: str
+    processing_time: float
+    document_id: int
+
+class RegisterResponse(BaseModel):
+    message: str
+
+class HealthResponse(BaseModel):
+    status: str
+    message: str
+    api_key_status: str
+    database: str
+    llm_available: bool
+
+class ScenarioRequest(BaseModel):
+    scenario_text: str
+    
+# --- Helper Functions ---
+def extract_text_from_pdf(file_path: str) -> str:
+    # ... (Your extract_text_from_pdf function remains the same)
     text = ""
     try:
         with fitz.open(file_path) as doc:
             for page in doc:
                 text += page.get_text()
     except Exception as e:
-        print(f"PyMuPDF failed: {str(e)}, trying pdfplumber...")
+        print(f"PyMuPDF failed: {e}, trying pdfplumber...")
         try:
             with pdfplumber.open(file_path) as pdf:
                 for page in pdf.pages:
                     text += page.extract_text() or ""
         except Exception as e2:
-            print(f"pdfplumber also failed: {str(e2)}")
-            raise Exception(f"Could not extract text from PDF: {str(e)} / {str(e2)}")
-    
+            print(f"pdfplumber also failed: {e2}")
+            raise IOError(f"Could not extract text from PDF: {e} / {e2}")
     if not text.strip():
-        raise Exception("PDF appears to be empty or contains no extractable text")
-    
+        raise ValueError("PDF appears to be empty or contains no extractable text")
     return text
 
-def analyze_document_with_ai(text):
-    # Check if LLM is initialized
+def analyze_document_with_ai(text: str) -> dict:
     if llm is None:
         return {
-            "overall_risk_score": 0.5,
+            "overall_risk_score": 0.0,
             "high_risk_clauses": [],
-            "simplified_summary": "AI analysis is currently unavailable due to API key configuration issues. Please contact the administrator.",
+            "simplified_summary": "AI analysis is unavailable due to an API key configuration issue.",
             "processing_time": 0.0,
             "error": "GEMINI_API_KEY not configured properly"
         }
     
     try:
-        # Refined prompt for legal risk classification
-        risk_prompt = PromptTemplate(
-            input_variables=["text"],
-            template="""
-            Analyze the following legal document for risk. Identify clauses related to:
-            - Termination
-            - Payment terms
-            - Liability
-            - Intellectual property
-            - Confidentiality
-            - Dispute resolution
-
-            For each identified clause, provide:
-            - Clause text (quote directly)
-            - Risk level (High, Medium, Low) based on potential impact
-            - Confidence score (0-1)
-            - Reason for risk level
-
-            Also, calculate an overall risk score (0-1) for the document.
-
-            Document text:
-            {text}
-
-            Output in JSON format with keys: overall_risk_score, clauses (list of dicts with clause, risk, confidence, reason)
-            """
+        parser = StrOutputParser()
+        # Risk Analysis Chain
+        risk_prompt = PromptTemplate.from_template(
+            """Analyze the following legal document for risk. Identify clauses related to Termination, Payment terms, Liability, Intellectual property, Confidentiality, and Dispute resolution. For each, provide: 'clause' (quoted text), 'risk' (High, Medium, or Low), 'confidence' (0-1 score), and 'reason'. Also, calculate an 'overall_risk_score' (0-1). Document text: {text}. Output ONLY a valid JSON object with keys: 'overall_risk_score', 'clauses' (a list of dictionaries)."""
         )
-        risk_chain = LLMChain(llm=llm, prompt=risk_prompt)
-        risk_result_str = risk_chain.run(text=text)
+        risk_chain = risk_prompt | llm | parser
+        risk_result_str = risk_chain.invoke({"text": text})
         
         try:
-            risk_result = json.loads(risk_result_str)
-        except:
+            risk_result = json.loads(risk_result_str.strip().replace("```json", "").replace("```", ""))
+        except json.JSONDecodeError:
+            print("⚠️ Warning: Failed to parse JSON from risk analysis. Using fallback.")
             risk_result = {"overall_risk_score": 0.5, "clauses": []}
 
-        # Prompt for simplification
-        simplify_prompt = PromptTemplate(
-            input_variables=["text"],
-            template="""
-            Simplify the following legal document into plain English. Focus on key obligations, rights, and risks.
-            Use simple language and explain any legal terms.
-
-            Document text:
-            {text}
-
-            Provide a concise simplified summary.
-            """
+        # Simplification Chain
+        simplify_prompt = PromptTemplate.from_template(
+            """Simplify the following legal document into plain English. Focus on key obligations, rights, and risks. Use simple language and explain any legal terms. Document text: {text}. Provide a concise simplified summary."""
         )
-        simplify_chain = LLMChain(llm=llm, prompt=simplify_prompt)
-        response = simplify_chain.invoke({"text": text})
-        simplified = response["text"] if "text" in response else response["output_text"]
-        import re
-
-        simplified = (re.sub(r'\*{1,2}', '', simplified))
-
+        simplify_chain = simplify_prompt | llm | parser
+        simplified = simplify_chain.invoke({"text": text})
+        
         return {
             "overall_risk_score": risk_result.get("overall_risk_score", 0.5),
             "high_risk_clauses": risk_result.get("clauses", []),
-            "simplified_summary": simplified,
-            "processing_time": 5.0
+            "simplified_summary": simplified.strip(),
+            "processing_time": 5.0  # Placeholder
         }
     except Exception as e:
         print(f"AI Analysis Error: {str(e)}")
-        return {
-            "overall_risk_score": 0.5,
-            "high_risk_clauses": [],
-            "simplified_summary": "Analysis temporarily unavailable. Please try again later.",
-            "processing_time": 0.0,
-            "error": str(e)
-        }
+        raise e
 
-@app.get("/")
+# --- API Endpoints ---
+@app.get("/", tags=["General"])
 async def root():
     return {"message": "Welcome to LexiLens AI API"}
 
-@app.get("/health")
+@app.get("/health", response_model=HealthResponse, tags=["General"])
 async def health_check():
-    api_key_status = "configured" if llm is not None else "not_configured"
-    return {
-        "status": "healthy" if llm is not None else "degraded",
-        "message": "LexiLens AI API is running",
-        "api_key_status": api_key_status,
-        "llm_available": llm is not None
-    }
-
-@app.get("/documents/{document_id}")
-async def get_document(document_id: int, token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
-    user = get_current_user(token, db)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    
-    doc = db.query(Document).filter(Document.id == document_id, Document.owner_id == user.id).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-    
-    # Get the latest analysis for this document
-    analysis = db.query(Analysis).filter(Analysis.document_id == document_id).order_by(Analysis.created_at.desc()).first()
-    
-    return {
-        "id": doc.id,
-        "filename": doc.filename,
-        "content": doc.content,
-        "uploaded_at": doc.uploaded_at,
-        "analysis": {
-            "overall_risk_score": analysis.overall_risk_score if analysis else 0.5,
-            "high_risk_clauses": json.loads(analysis.high_risk_clauses) if analysis else [],
-            "simplified_summary": analysis.simplified_summary if analysis else "No analysis available",
-            "processing_time": analysis.processing_time if analysis else 0.0
-        } if analysis else None
-    }
-
-@app.post("/search")
-async def search_documents(query: str, token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
-    user = get_current_user(token, db)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    
-    # Get user's documents
-    docs = db.query(Document).filter(Document.owner_id == user.id).all()
-    
-    results = []
-    for doc in docs:
-        # Simple text search (can be improved with vector search)
-        if query.lower() in doc.content.lower():
-            # Use AI to provide context
-            context_prompt = PromptTemplate(
-                input_variables=["query", "content"],
-                template="""
-                Given the search query: "{query}"
-                And the document content: {content}
-                
-                Provide a relevant snippet from the document that matches the query.
-                """
-            )
-            context_chain = LLMChain(llm=llm, prompt=context_prompt)
-            snippet = context_chain.run(query=query, content=doc.content[:1000])  # Limit content
-            
-            results.append({
-                "document_id": doc.id,
-                "filename": doc.filename,
-                "snippet": snippet
-            })
-    
-    return {"query": query, "results": results}
-
-@app.post("/scenario")
-async def analyze_scenario(scenario: str, token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
-    user = get_current_user(token, db)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    
-    # Get user's recent documents
-    docs = db.query(Document).filter(Document.owner_id == user.id).order_by(Document.uploaded_at.desc()).limit(3).all()
-    
-    combined_content = "\n".join([doc.content for doc in docs])
-    
-    scenario_prompt = PromptTemplate(
-        input_variables=["scenario", "content"],
-        template="""
-        Analyze this legal scenario: "{scenario}"
-        
-        Based on the following document content, provide actionable advice and potential risks:
-        {content}
-        
-        Structure your response as:
-        - Summary of the scenario
-        - Potential risks
-        - Recommended actions
-        - Relevant clauses from documents
-        """
+    return HealthResponse(
+        status="healthy" if llm is not None else "degraded",
+        message="LexiLens AI API is running",
+        api_key_status="configured" if llm is not None else "not_configured",
+        database="supabase_connected" if os.getenv("SUPABASE_DATABASE_URL") else "sqlite_fallback",
+        llm_available=llm is not None
     )
-    scenario_chain = LLMChain(llm=llm, prompt=scenario_prompt)
-    analysis = scenario_chain.run(scenario=scenario, content=combined_content[:2000])  # Limit content
+
+@app.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED, tags=["Authentication"])
+async def register(email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
+    """
+    Registers a new user with an email and password.
+    """
+    # Check if a user with that email already exists
+    existing_user = db.query(User).filter(User.email == email).first()
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="An account with this email already exists.",
+        )
     
-    return {"scenario": scenario, "analysis": analysis}
-
-@app.post("/register")
-async def register(email: str, password: str, db: Session = Depends(get_db)):
+    # Create the new user
     hashed_password = get_password_hash(password)
-    user = User(email=email, hashed_password=hashed_password)
-    db.add(user)
+    new_user = User(email=email, hashed_password=hashed_password)
+    db.add(new_user)
     db.commit()
-    db.refresh(user)
-    return {"message": "User created"}
+    
+    return RegisterResponse(message="User created successfully. Please login.")
 
-@app.post("/token")
+
+@app.post("/token", response_model=TokenResponse, tags=["Authentication"])
 async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
@@ -300,26 +238,19 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
             headers={"WWW-Authenticate": "Bearer"},
         )
     access_token = create_access_token(data={"sub": user.email})
-    return {"access_token": access_token, "token_type": "bearer"}
+    return TokenResponse(access_token=access_token, token_type="bearer")
 
-@app.post("/analyze")
-async def analyze_document(file: UploadFile = File(...), token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+@app.post("/analyze", response_model=AnalysisResponse, tags=["Analysis"])
+async def analyze_document(file: UploadFile = File(...), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    temp_path = f"temp_{file.filename}"
     try:
-        user = get_current_user(token, db)
-        if not user:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        
-        temp_path = f"temp_{file.filename}"
         with open(temp_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         
         text = extract_text_from_pdf(temp_path)
         
-        if not text.strip():
-            raise HTTPException(status_code=400, detail="Could not extract text from PDF")
-        
         # Save document to DB
-        doc = Document(filename=file.filename, content=text, owner_id=user.id)
+        doc = Document(filename=file.filename, content=text, owner_id=current_user.id)
         db.add(doc)
         db.commit()
         db.refresh(doc)
@@ -337,18 +268,84 @@ async def analyze_document(file: UploadFile = File(...), token: str = Depends(oa
         db.add(analysis)
         db.commit()
         
-        os.remove(temp_path)
-        
-        return {**analysis_result, "document_id": doc.id}
-    except HTTPException:
-        raise
+        analysis_result["document_id"] = doc.id
+        return analysis_result
+
+    except (IOError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         print(f"Analysis endpoint error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred during analysis.")
     finally:
-        if 'temp_path' in locals() and os.path.exists(temp_path):
+        if os.path.exists(temp_path):
             os.remove(temp_path)
+
+@app.get("/user/documents", response_model=List[DocumentOut], tags=["Documents"])
+async def get_user_documents(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return db.query(Document).filter(Document.owner_id == current_user.id).order_by(Document.uploaded_at.desc()).all()
+
+@app.get("/documents/{document_id}", response_model=DocumentDetail, tags=["Documents"])
+async def get_document(document_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    doc = db.query(Document).filter(Document.id == document_id, Document.owner_id == current_user.id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    analysis_obj = db.query(Analysis).filter(Analysis.document_id == document_id).order_by(Analysis.created_at.desc()).first()
+    
+    analysis_data = None
+    if analysis_obj:
+        analysis_data = {
+            "overall_risk_score": analysis_obj.overall_risk_score,
+            "high_risk_clauses": json.loads(analysis_obj.high_risk_clauses),
+            "simplified_summary": analysis_obj.simplified_summary,
+            "processing_time": analysis_obj.processing_time
+        }
+    
+    doc.analysis = analysis_data
+    return doc
+
+@app.post("/scenario/{document_id}", response_model=ScenarioResponse, tags=["Analysis"])
+async def analyze_scenario_for_document(
+    document_id: int,
+    request: ScenarioRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Analyzes a specific what-if scenario based on the content of a single document.
+    """
+    # Fetch the specific document the user selected
+    doc = db.query(Document).filter(Document.id == document_id, Document.owner_id == current_user.id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    scenario_prompt = PromptTemplate.from_template(
+        """
+        Analyze this legal scenario: "{scenario}"
+        
+        Based ONLY on the following document content, provide actionable advice and potential risks.
+        Refer to specific concepts within the document.
+
+        Document Content:
+        "{content}"
+        
+        Your structured response should include:
+        - A summary of the scenario.
+        - Potential risks based on the document.
+        - Recommended actions.
+        """
+    )
+    
+    parser = StrOutputParser()
+    scenario_chain = scenario_prompt | llm | parser
+    
+    analysis = scenario_chain.invoke({
+        "scenario": request.scenario_text,
+        "content": doc.content
+    })
+    
+    return ScenarioResponse(scenario=request.scenario_text, analysis=analysis)
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

@@ -1,14 +1,11 @@
-from sqlalchemy import create_engine, Column, Integer, String, Text, Float, DateTime, ForeignKey
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy import Column, Integer, String, Text, Float, DateTime, ForeignKey
+from sqlalchemy.orm import relationship
 import datetime
+from .database import Base, engine
 
-SQLALCHEMY_DATABASE_URL = "sqlite:///./lexilens.db"
+import os
+from dotenv import load_dotenv
 
-engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-Base = declarative_base()
 
 class User(Base):
     __tablename__ = "users"
@@ -39,4 +36,12 @@ class Analysis(Base):
     processing_time = Column(Float)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
-Base.metadata.create_all(bind=engine)
+# Function to create all tables
+def create_tables():
+    try:
+        Base.metadata.create_all(bind=engine) # Use the imported engine
+        print("✅ Database tables created successfully")
+        return True
+    except Exception as e:
+        print(f"❌ Error creating database tables: {str(e)}")
+        return False

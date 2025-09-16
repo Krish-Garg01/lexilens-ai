@@ -131,24 +131,9 @@ def display_analysis_results(result, filename):
     # Simplified Summary with custom styling
     st.subheader("📝 Simplified Summary")
     summary = result.get('simplified_summary', 'No summary available')
-
-    # --- START OF CORRECTION ---
-
-    # Remove markdown-style bolding (asterisks) and strip wrapping quotes
-    if summary.startswith('"') and summary.endswith('"'):
-       summary = summary[1:-1]
     
-    summary = summary.replace('**', '') # This line removes all asterisks
-
-    # --- END OF CORRECTION ---
-
-    st.markdown(f"""
-    <div class="summary-box">
-        {summary.replace(chr(10), '<br>')}
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ... (the rest of the function remains the same)
+    st.write(summary)
+  
     
     # High Risk Clauses
     high_risk_clauses = result.get('high_risk_clauses', [])

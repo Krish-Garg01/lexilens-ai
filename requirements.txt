@@ -1,2 +1,16 @@
 streamlit
 requests
+fastapi
+uvicorn[standard]
+sqlalchemy
+python-multipart
+python-jose[cryptography]
+passlib[bcrypt]
+python-dotenv
+pymupdf
+pdfplumber
+langchain
+langchain-google-genai
+pytest
+httpx
+psycopg2-binary
