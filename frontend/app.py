@@ -1,6 +1,11 @@
 import streamlit as st
 import requests
 import time
+import os 
+
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+response = requests.post(f"{BACKEND_URL}/token", data={"username": email, "password": password})
+
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -131,33 +136,59 @@ def load_full_document_analysis(doc_id):
 
 # --- UI Component Functions ---
 # (This function remains the same as your previous version)
+# In frontend/app.py
+
+# In frontend/app.py
+
 def display_analysis_results(analysis_result, title):
     if not analysis_result:
         st.warning("Analysis for this document is not available or still processing.")
         return
+        
     st.subheader(f"📊 Analysis for: {title}")
     risk_score = analysis_result.get('overall_risk_score', 0)
+    if risk_score is None: risk_score = 0.0 # Handle None case
+    
     if risk_score <= 0.3: delta_color, level = "inverse", "Low Risk"
     elif risk_score <= 0.7: delta_color, level = "normal", "Medium Risk"
-    else: delta_color, level = "inverse", "High Risk" # Using inverse for red in dark theme
+    else: delta_color, level = "inverse", "High Risk"
     st.metric(label="Overall Risk Score", value=f"{risk_score:.2f}", delta=level, delta_color=delta_color)
+    
     with st.expander("📝 Simplified Summary", expanded=True):
         st.write(analysis_result.get('simplified_summary', 'No summary provided.'))
+        
     st.subheader("⚠️ High-Risk Clauses")
     high_risk_clauses = analysis_result.get('high_risk_clauses', [])
+    
     if high_risk_clauses:
         for i, clause in enumerate(high_risk_clauses):
             with st.container(border=True):
                 st.markdown(f"**Clause {i+1}:** {clause.get('clause', 'N/A')}")
                 st.info(f"**Reason:** {clause.get('reason', 'N/A')}")
                 st.progress(clause.get('confidence', 0.0), text=f"Confidence: {clause.get('confidence', 0.0):.0%}")
+                
+                # --- THIS IS THE API CALL LOGIC ---
                 if st.button("✍️ Suggest Alternatives", key=f"negotiate_{i}"):
                     with st.spinner("AI is drafting negotiation suggestions..."):
-                        # (Negotiator API call logic here)
-                        pass
+                        try:
+                            headers = {"Authorization": f"Bearer {st.session_state.token}"}
+                            payload = {
+                                "clause_text": clause.get('clause', ''),
+                                "risk_level": clause.get('risk', 'High')
+                            }
+                            response = requests.post("http://localhost:8000/negotiate-clause", json=payload, headers=headers)
+                            
+                            if response.status_code == 200:
+                                suggestions = response.json().get("suggestions", [])
+                                st.success("Here are some fairer alternatives:")
+                                for j, suggestion in enumerate(suggestions):
+                                    st.code(suggestion, language="text")
+                            else:
+                                st.error(f"Could not get suggestions: {response.text}")
+                        except Exception as e:
+                            st.error(f"An error occurred: {e}")
     else:
         st.success("No high-risk clauses were detected.")
-
 # --- Page Rendering Logic ---
 # Sidebar Navigation
 with st.sidebar:
@@ -277,42 +308,76 @@ elif st.session_state.page == "login":
             else:
                 st.error(f"Registration failed: {response.text}")
 
+# In frontend/app.py
+
 elif st.session_state.token and st.session_state.page == "upload":
     st.title("Upload & Analyze")
+
+    # --- Section for Previously Uploaded Documents ---
     if st.session_state.uploaded_documents:
         st.subheader("Your Previously Uploaded Documents")
-        for doc_id, doc_info in st.session_state.uploaded_documents.items():
-            col1, col2 = st.columns([4, 1])
-            with col1:
-                st.write(f"📄 {doc_info['title']}")
-            with col2:
-                if st.button("View Analysis", key=f"view_{doc_id}", use_container_width=True):
-                    st.session_state.current_document_id = doc_id
+        # Create a copy of keys to iterate over, allowing us to modify the dict
+        for doc_id in list(st.session_state.uploaded_documents.keys()):
+            # Check if the document still exists before displaying
+            if doc_id in st.session_state.uploaded_documents:
+                doc_info = st.session_state.uploaded_documents[doc_id]
+                col1, col2, col3 = st.columns([3, 1, 1])
+                with col1:
+                    st.write(f"📄 {doc_info['title']}")
+                with col2:
+                    if st.button("View Analysis", key=f"view_{doc_id}", use_container_width=True):
+                        st.session_state.current_document_id = doc_id
+                        st.rerun()
+                with col3:
+                    # --- NEW: Remove Button ---
+                    if st.button("Remove", key=f"remove_{doc_id}", use_container_width=True, type="secondary"):
+                        try:
+                            headers = {"Authorization": f"Bearer {st.session_state.token}"}
+                            response = requests.delete(f"http://localhost:8000/documents/{doc_id}", headers=headers)
+                            if response.status_code == 200:
+                                # Remove from session state and refresh
+                                del st.session_state.uploaded_documents[doc_id]
+                                if st.session_state.current_document_id == doc_id:
+                                    st.session_state.current_document_id = None
+                                st.success(f"Removed '{doc_info['title']}' successfully.")
+                                st.rerun()
+                            else:
+                                st.error(f"Failed to remove document: {response.text}")
+                        except Exception as e:
+                            st.error(f"An error occurred: {e}")
         st.divider()
+
+    # --- File Uploader ---
     st.subheader("Upload a New Document")
     uploaded_file = st.file_uploader("Choose a PDF, DOCX, or TXT file", type=['pdf', 'docx', 'txt'])
+
     if uploaded_file is not None:
         if st.button("Analyze Document", type="primary", use_container_width=True):
             with st.spinner("Uploading and starting analysis..."):
                 headers = {"Authorization": f"Bearer {st.session_state.token}"}
                 files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
                 response = requests.post("http://localhost:8000/analyze", files=files, headers=headers)
+                
                 if response.status_code == 200:
                     result = response.json()
                     st.success(result.get("message", "Analysis started!"))
                     st.info("The full analysis will be available here and on your dashboard shortly.")
-                    time.sleep(2)
+                    time.sleep(1) # Give a moment for the user to read the message
                     fetch_user_documents()
                     st.rerun()
                 else:
                     st.error(f"Upload failed: {response.text}")
+    
     st.divider()
+
+    # --- Display Selected Document's Analysis ---
     if st.session_state.current_document_id:
         doc_id = st.session_state.current_document_id
         if doc_id in st.session_state.uploaded_documents:
             doc_data = st.session_state.uploaded_documents[doc_id]
             if doc_data.get('analysis') is None:
                 load_full_document_analysis(doc_id)
+            
             display_analysis_results(doc_data.get('analysis'), doc_data['title'])
 
 elif st.session_state.token and st.session_state.page == "search":

@@ -391,6 +391,29 @@ async def negotiate_clause(
         print(f"Negotiation Error: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate negotiation suggestions.")
 
+@app.delete("/documents/{document_id}", status_code=status.HTTP_200_OK, tags=["Documents"])
+async def delete_document(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Deletes a document and all its associated analyses for the authenticated user.
+    """
+    # Find the document to ensure it belongs to the current user
+    doc = db.query(Document).filter(Document.id == document_id, Document.owner_id == current_user.id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Delete associated analyses first to maintain data integrity
+    db.query(Analysis).filter(Analysis.document_id == document_id).delete()
+    
+    # Now delete the document itself
+    db.delete(doc)
+    db.commit()
+    
+    return {"message": "Document and its analyses deleted successfully"}
+
 @app.get("/documents/{document_id}", response_model=DocumentDetail, tags=["Documents"])
 async def get_document(document_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     doc = db.query(Document).filter(Document.id == document_id, Document.owner_id == current_user.id).first()
