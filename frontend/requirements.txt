@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+python-dotenv
+python-multipart
+python-jose[cryptography]
+passlib[bcrypt]
+streamlit
+requests
+langchain
+langchain-google-genai
+langchain-core
+fitz
+pdfplumber
+Pillow
+gunicorn

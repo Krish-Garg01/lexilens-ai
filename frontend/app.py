@@ -1,7 +1,10 @@
 import streamlit as st
 import requests
 import time
+import os 
 
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+response = requests.post(f"{BACKEND_URL}/token", data={"username": email, "password": password})
 
 
 # --- Page Configuration ---
