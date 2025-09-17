@@ -108,6 +108,23 @@ class HealthResponse(BaseModel):
     database: str
     llm_available: bool
 
+class DocumentQARequest(BaseModel):
+    question: str
+
+class DocumentQAResponse(BaseModel):
+    question: str
+    answer: str
+    document_id: int
+
+class NegotiateRequest(BaseModel):
+    clause_text: str
+    risk_level: str
+
+class NegotiateResponse(BaseModel):
+    original_clause: str
+    suggestions: List[str]
+
+
 # --- Helper Functions ---
 def extract_text_from_pdf(file_path: str) -> str:
     text = ""
@@ -284,6 +301,95 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
 @app.get("/user/documents", response_model=List[DocumentOut], tags=["Documents"])
 async def get_user_documents(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(Document).filter(Document.owner_id == current_user.id).order_by(Document.uploaded_at.desc()).all()
+
+@app.post("/document/{document_id}/query", response_model=DocumentQAResponse, tags=["Analysis"])
+async def query_document(
+    document_id: int,
+    request: DocumentQARequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Answers a specific question based on the content of a single document.
+    """
+    doc = db.query(Document).filter(Document.id == document_id, Document.owner_id == current_user.id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    qa_prompt = PromptTemplate.from_template(
+        """
+        You are an AI assistant specialized in legal document analysis.
+        Answer the following question based ONLY on the provided document content.
+        If the answer is not in the document, state that clearly. Be concise and precise.
+
+        Question: "{question}"
+        
+        Document Content:
+        "{content}"
+        """
+    )
+    
+    parser = StrOutputParser()
+    qa_chain = qa_prompt | llm | parser
+    
+    answer = qa_chain.invoke({
+        "question": request.question,
+        "content": doc.content
+    })
+    
+    return DocumentQAResponse(
+        question=request.question,
+        answer=answer,
+        document_id=document_id
+    )
+
+@app.post("/negotiate-clause", response_model=NegotiateResponse, tags=["Analysis"])
+async def negotiate_clause(
+    request: NegotiateRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Generates fairer, alternative wording for a high-risk legal clause.
+    """
+    if not llm:
+        raise HTTPException(status_code=503, detail="AI service is unavailable.")
+
+    negotiate_prompt = PromptTemplate.from_template(
+        """
+        You are an AI assistant skilled in legal contract negotiation.
+        Your user has identified a clause with a '{risk_level}' risk level.
+        Your task is to rewrite this clause to be more fair and balanced, while preserving the original intent where possible.
+
+        Original Clause:
+        "{clause_text}"
+
+        Generate 2-3 distinct, alternative versions of this clause that are more favorable to the user.
+        Each suggestion should be a complete, professionally worded clause.
+        
+        Return ONLY a JSON object with a single key "suggestions" which is a list of the suggested clause strings.
+        Example: {{"suggestions": ["First suggested clause...", "Second suggested clause..."]}}
+        """
+    )
+    
+    parser = StrOutputParser()
+    negotiate_chain = negotiate_prompt | llm | parser
+    
+    try:
+        response_str = negotiate_chain.invoke({
+            "risk_level": request.risk_level,
+            "clause_text": request.clause_text
+        })
+        # Clean and parse the JSON output from the LLM
+        response_json = json.loads(response_str.strip().replace("```json", "").replace("```", ""))
+        suggestions = response_json.get("suggestions", ["Could not generate suggestions."])
+        
+        return NegotiateResponse(
+            original_clause=request.clause_text,
+            suggestions=suggestions
+        )
+    except Exception as e:
+        print(f"Negotiation Error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate negotiation suggestions.")
 
 @app.get("/documents/{document_id}", response_model=DocumentDetail, tags=["Documents"])
 async def get_document(document_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
