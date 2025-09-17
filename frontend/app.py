@@ -182,6 +182,7 @@ if st.session_state.page == "home":
     st.markdown('<div class="main-container">', unsafe_allow_html=True)
     
     # Hero Section
+    st.title("⚖️ LexiLens AI")
     st.markdown('<p class="hero-title">From Legal Chaos to Crystal Clarity.</p>', unsafe_allow_html=True)
     st.markdown('<p class="hero-subtitle">LexiLens AI deconstructs, classifies, and simplifies your contracts, empowering you to sign with confidence.</p>', unsafe_allow_html=True)
     if st.button("Get Started for Free", type="primary", use_container_width=True):
