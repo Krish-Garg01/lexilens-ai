@@ -1,12 +1,11 @@
 import streamlit as st
 import requests
 import time
-import os 
+import os
 
+from dotenv import load_dotenv
+load_dotenv()
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
-response = requests.post(f"{BACKEND_URL}/token", data={"username": email, "password": password})
-
-
 # --- Page Configuration ---
 st.set_page_config(
     page_title="LexiLens AI",
@@ -100,17 +99,27 @@ st.markdown("""
         border-radius: 0.5rem;
         margin-bottom: 0.5rem;
     }
+    
+    /* Answer Box */
+    .answer-box {
+        background-color: #1e293b;
+        border-left: 4px solid #3b82f6;
+        padding: 1rem 1.5rem;
+        border-radius: 0.5rem;
+        margin-top: 1rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 
 # --- API Communication Functions ---
-# (These functions remain the same as your previous version)
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+
 def fetch_user_documents():
     if not st.session_state.token: return
     try:
         headers = {"Authorization": f"Bearer {st.session_state.token}"}
-        response = requests.get("http://localhost:8000/user/documents", headers=headers)
+        response = requests.get(f"{BACKEND_URL}/user/documents", headers=headers)
         if response.status_code == 200:
             st.session_state.uploaded_documents = {}
             for doc in response.json():
@@ -128,26 +137,20 @@ def load_full_document_analysis(doc_id):
     try:
         with st.spinner("Loading analysis..."):
             headers = {"Authorization": f"Bearer {st.session_state.token}"}
-            response = requests.get(f"http://localhost:8000/documents/{doc_id}", headers=headers)
+            response = requests.get(f"{BACKEND_URL}/documents/{doc_id}", headers=headers)
             if response.status_code == 200:
                 full_doc_data = response.json()
                 st.session_state.uploaded_documents[doc_id]['analysis'] = full_doc_data.get('analysis')
     except Exception as e: st.error(f"An error occurred: {e}")
 
 # --- UI Component Functions ---
-# (This function remains the same as your previous version)
-# In frontend/app.py
-
-# In frontend/app.py
-
 def display_analysis_results(analysis_result, title):
     if not analysis_result:
         st.warning("Analysis for this document is not available or still processing.")
         return
-        
     st.subheader(f"📊 Analysis for: {title}")
-    risk_score = analysis_result.get('overall_risk_score', 0)
-    if risk_score is None: risk_score = 0.0 # Handle None case
+    risk_score = analysis_result.get('overall_risk_score', 0.0)
+    if risk_score is None: risk_score = 0.0
     
     if risk_score <= 0.3: delta_color, level = "inverse", "Low Risk"
     elif risk_score <= 0.7: delta_color, level = "normal", "Medium Risk"
@@ -167,30 +170,22 @@ def display_analysis_results(analysis_result, title):
                 st.info(f"**Reason:** {clause.get('reason', 'N/A')}")
                 st.progress(clause.get('confidence', 0.0), text=f"Confidence: {clause.get('confidence', 0.0):.0%}")
                 
-                # --- THIS IS THE API CALL LOGIC ---
                 if st.button("✍️ Suggest Alternatives", key=f"negotiate_{i}"):
                     with st.spinner("AI is drafting negotiation suggestions..."):
-                        try:
-                            headers = {"Authorization": f"Bearer {st.session_state.token}"}
-                            payload = {
-                                "clause_text": clause.get('clause', ''),
-                                "risk_level": clause.get('risk', 'High')
-                            }
-                            response = requests.post("http://localhost:8000/negotiate-clause", json=payload, headers=headers)
-                            
-                            if response.status_code == 200:
-                                suggestions = response.json().get("suggestions", [])
-                                st.success("Here are some fairer alternatives:")
-                                for j, suggestion in enumerate(suggestions):
-                                    st.code(suggestion, language="text")
-                            else:
-                                st.error(f"Could not get suggestions: {response.text}")
-                        except Exception as e:
-                            st.error(f"An error occurred: {e}")
+                        headers = {"Authorization": f"Bearer {st.session_state.token}"}
+                        payload = {"clause_text": clause.get('clause', ''), "risk_level": clause.get('risk', 'High')}
+                        response = requests.post(f"{BACKEND_URL}/negotiate-clause", json=payload, headers=headers)
+                        if response.status_code == 200:
+                            suggestions = response.json().get("suggestions", [])
+                            st.success("Here are some fairer alternatives:")
+                            for suggestion in suggestions:
+                                st.code(suggestion, language="text")
+                        else:
+                            st.error(f"Could not get suggestions: {response.text}")
     else:
         st.success("No high-risk clauses were detected.")
-# --- Page Rendering Logic ---
-# Sidebar Navigation
+
+# --- Page Routing ---
 with st.sidebar:
     st.title("⚖️ LexiLens AI")
     if st.button("Home", use_container_width=True): st.session_state.page = "home"
@@ -202,11 +197,7 @@ with st.sidebar:
         if st.button("Search / Q&A", use_container_width=True): st.session_state.page = "search"
         if st.button("What-If Scenarios", use_container_width=True): st.session_state.page = "scenarios"
         if st.button("Logout", use_container_width=True):
-            st.session_state.token = None
-            st.session_state.uploaded_documents = {}
-            st.session_state.current_document_id = None
-            st.session_state.page = "home"
-            st.rerun()
+            st.session_state.clear(); st.session_state.page = "home"; st.rerun()
 
 # --- Main Page Content ---
 if st.session_state.page == "home":
@@ -245,205 +236,151 @@ if st.session_state.page == "home":
         st.markdown("""<div class="card"><div class="card-icon">❓</div><div class="card-title">Document Q&A</div><p class="card-description">Ask direct questions about your document and get precise answers from the text itself.</p></div>""", unsafe_allow_html=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
-
-elif st.session_state.token and st.session_state.page == "dashboard":
-    st.title("Dashboard")
-    st.markdown("Welcome back! Here's a summary of your document workspace.")
-    
-    if not st.session_state.uploaded_documents:
-        fetch_user_documents()
-
-    # --- Metrics Section ---
-    total_docs = len(st.session_state.uploaded_documents)
-    # Placeholder values for other metrics
-    high_risk_count = sum(1 for doc in st.session_state.uploaded_documents.values() if doc.get('analysis') and doc['analysis'].get('overall_risk_score', 0) > 0.7)
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown(f'<div class="card"><div class="card-icon">📄</div><div class="dashboard-metric">{total_docs}</div><div class="card-title">Total Documents</div></div>', unsafe_allow_html=True)
-    with col2:
-        st.markdown(f'<div class="card"><div class="card-icon">🚨</div><div class="dashboard-metric">{high_risk_count}</div><div class="card-title">High-Risk Docs</div></div>', unsafe_allow_html=True)
-    with col3:
-        # Placeholder for another metric
-        st.markdown(f'<div class="card"><div class="card-icon">✍️</div><div class="dashboard-metric">0</div><div class="card-title">Negotiations Started</div></div>', unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # --- Recent Documents List ---
-    st.subheader("Your Documents")
-    if not st.session_state.uploaded_documents:
-        st.info("No documents found. Go to the 'Upload & Analyze' page to get started.")
-    else:
-        for doc_id, doc in st.session_state.uploaded_documents.items():
-            col1, col2 = st.columns([4, 1])
-            with col1:
-                st.markdown(f"<div class='dashboard-doc-list'>📄 **{doc['title']}**<br><small style='opacity: 0.7;'>File: {doc['filename']}</small></div>", unsafe_allow_html=True)
-            with col2:
-                if st.button("View Analysis", key=f"dash_view_{doc_id}", use_container_width=True):
-                    st.session_state.current_document_id = doc_id
-                    st.session_state.page = "upload"
-                    st.rerun()
-
-# (The rest of the pages: login, upload, search, scenarios remain the same as your previous version)
-elif st.session_state.page == "login":
-    st.title("Welcome to LexiLens AI")
-    email = st.text_input("Email")
-    password = st.text_input("Password", type="password")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Login", use_container_width=True, type="primary"):
-            response = requests.post("http://localhost:8000/token", data={"username": email, "password": password})
-            if response.status_code == 200:
-                st.session_state.token = response.json()["access_token"]
-                fetch_user_documents()
-                st.session_state.page = "dashboard"
-                st.rerun()
-            else:
-                st.error("Invalid credentials.")
-    with col2:
-        if st.button("Register", use_container_width=True):
-            response = requests.post("http://localhost:8000/register", data={"email": email, "password": password})
-            if response.status_code == 201:
-                st.success("Registered successfully! Please login.")
-            else:
-                st.error(f"Registration failed: {response.text}")
-
 # In frontend/app.py
 
-elif st.session_state.token and st.session_state.page == "upload":
-    st.title("Upload & Analyze")
+elif st.session_state.page == "login":
+    st.title("Welcome to LexiLens AI")
+    col1, col2 = st.columns(2, gap="large")
 
-    # --- Section for Previously Uploaded Documents ---
-    if st.session_state.uploaded_documents:
-        st.subheader("Your Previously Uploaded Documents")
-        # Create a copy of keys to iterate over, allowing us to modify the dict
-        for doc_id in list(st.session_state.uploaded_documents.keys()):
-            # Check if the document still exists before displaying
-            if doc_id in st.session_state.uploaded_documents:
-                doc_info = st.session_state.uploaded_documents[doc_id]
-                col1, col2, col3 = st.columns([3, 1, 1])
-                with col1:
-                    st.write(f"📄 {doc_info['title']}")
-                with col2:
-                    if st.button("View Analysis", key=f"view_{doc_id}", use_container_width=True):
-                        st.session_state.current_document_id = doc_id
-                        st.rerun()
-                with col3:
-                    # --- NEW: Remove Button ---
-                    if st.button("Remove", key=f"remove_{doc_id}", use_container_width=True, type="secondary"):
-                        try:
-                            headers = {"Authorization": f"Bearer {st.session_state.token}"}
-                            response = requests.delete(f"http://localhost:8000/documents/{doc_id}", headers=headers)
-                            if response.status_code == 200:
-                                # Remove from session state and refresh
-                                del st.session_state.uploaded_documents[doc_id]
-                                if st.session_state.current_document_id == doc_id:
-                                    st.session_state.current_document_id = None
-                                st.success(f"Removed '{doc_info['title']}' successfully.")
-                                st.rerun()
-                            else:
-                                st.error(f"Failed to remove document: {response.text}")
-                        except Exception as e:
-                            st.error(f"An error occurred: {e}")
-        st.divider()
-
-    # --- File Uploader ---
-    st.subheader("Upload a New Document")
-    uploaded_file = st.file_uploader("Choose a PDF, DOCX, or TXT file", type=['pdf', 'docx', 'txt'])
-
-    if uploaded_file is not None:
-        if st.button("Analyze Document", type="primary", use_container_width=True):
-            with st.spinner("Uploading and starting analysis..."):
-                headers = {"Authorization": f"Bearer {st.session_state.token}"}
-                files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
-                response = requests.post("http://localhost:8000/analyze", files=files, headers=headers)
+    # --- LOGIN FORM ---
+    with col1:
+        with st.form("login_form"):
+            st.subheader("Login")
+            email_login = st.text_input("Email")
+            password_login = st.text_input("Password", type="password")
+            
+            submitted_login = st.form_submit_button("Login", use_container_width=True, type="primary")
+            if submitted_login:
+                # Send 'email_login' as the 'username' field, as expected by the backend
+                login_data = {"username": email_login, "password": password_login}
+                response = requests.post(f"{BACKEND_URL}/token", data=login_data)
                 
                 if response.status_code == 200:
-                    result = response.json()
-                    st.success(result.get("message", "Analysis started!"))
-                    st.info("The full analysis will be available here and on your dashboard shortly.")
-                    time.sleep(1) # Give a moment for the user to read the message
+                    st.session_state.token = response.json()["access_token"]
                     fetch_user_documents()
+                    st.session_state.page = "dashboard"
                     st.rerun()
                 else:
-                    st.error(f"Upload failed: {response.text}")
-    
-    st.divider()
+                    st.error("Login failed: Invalid credentials.")
 
-    # --- Display Selected Document's Analysis ---
-    if st.session_state.current_document_id:
-        doc_id = st.session_state.current_document_id
-        if doc_id in st.session_state.uploaded_documents:
-            doc_data = st.session_state.uploaded_documents[doc_id]
-            if doc_data.get('analysis') is None:
-                load_full_document_analysis(doc_id)
+    # --- REGISTRATION FORM ---
+    with col2:
+        with st.form("register_form"):
+            st.subheader("Don't have an account?")
+            email_reg = st.text_input("Email ", key="reg_email")
+            password_reg = st.text_input("Password ", type="password", key="reg_pass")
             
-            display_analysis_results(doc_data.get('analysis'), doc_data['title'])
+            submitted_reg = st.form_submit_button("Register", use_container_width=True)
+            if submitted_reg:
+                register_data = {"email": email_reg, "password": password_reg}
+                response = requests.post(f"{BACKEND_URL}/register", data=register_data)
 
-elif st.session_state.token and st.session_state.page == "search":
-    st.title("🔎 Search / Document Q&A")
-    st.write("Select a document and ask a specific question to find information within it.")
-    if not st.session_state.uploaded_documents:
-        st.warning("You need to upload at least one document to use the Q&A feature.")
-    else:
-        doc_options = {doc_id: info['title'] for doc_id, info in st.session_state.uploaded_documents.items()}
-        selected_doc_id = st.selectbox("Select a document to ask questions about:", options=list(doc_options.keys()), format_func=lambda doc_id: doc_options[doc_id])
-        question = st.text_area("Your Question:", height=100, placeholder="e.g., What is the monthly retainer fee?")
-        if st.button("Ask Question", type="primary", use_container_width=True):
-            if selected_doc_id and question:
-                with st.spinner("Searching for the answer in your document..."):
-                    try:
+                if response.status_code == 201:
+                    st.success("Registered successfully! Please login.")
+                else:
+                    st.error(f"Registration failed: {response.text}")
+
+elif st.session_state.token:
+    # Main app logic for logged-in users
+    if st.session_state.page == "dashboard":
+        st.title("Dashboard")
+        if not st.session_state.uploaded_documents: fetch_user_documents()
+        total_docs = len(st.session_state.uploaded_documents)
+        col1, col2, col3 = st.columns(3, gap="large")
+        with col1: st.markdown(f'<div class="card"><div class="card-icon">📄</div><div class="dashboard-metric">{total_docs}</div><div class="card-title">Total Documents</div></div>', unsafe_allow_html=True)
+        with col2: st.markdown(f'<div class="card"><div class="card-icon">🚨</div><div class="dashboard-metric">...</div><div class="card-title">High-Risk Docs</div></div>', unsafe_allow_html=True)
+        with col3: st.markdown(f'<div class="card"><div class="card-icon">✍️</div><div class="dashboard-metric">...</div><div class="card-title">Negotiations</div></div>', unsafe_allow_html=True)
+        st.subheader("Your Documents")
+        if not st.session_state.uploaded_documents:
+            st.info("No documents found. Go to 'Upload & Analyze' to get started.")
+        else:
+            for doc_id, doc in st.session_state.uploaded_documents.items():
+                col1, col2 = st.columns([4, 1])
+                with col1: st.markdown(f"<div class='dashboard-doc-list'>📄 **{doc['title']}**</div>", unsafe_allow_html=True)
+                with col2:
+                    if st.button("View Analysis", key=f"dash_view_{doc_id}", use_container_width=True):
+                        st.session_state.current_document_id = doc_id; st.session_state.page = "upload"; st.rerun()
+    
+    elif st.session_state.page == "upload":
+        st.title("Upload & Analyze")
+        if st.session_state.uploaded_documents:
+            st.subheader("Previously Uploaded Documents")
+            for doc_id, doc_info in list(st.session_state.uploaded_documents.items()):
+                col1, col2, col3 = st.columns([3, 1, 1])
+                with col1: st.write(f"📄 {doc_info['title']}")
+                with col2:
+                    if st.button("View", key=f"view_{doc_id}", use_container_width=True):
+                        st.session_state.current_document_id = doc_id; st.rerun()
+                with col3:
+                    if st.button("Remove", key=f"remove_{doc_id}", use_container_width=True):
                         headers = {"Authorization": f"Bearer {st.session_state.token}"}
-                        api_url = f"http://localhost:8000/document/{selected_doc_id}/query"
+                        requests.delete(f"{BACKEND_URL}/documents/{doc_id}", headers=headers)
+                        fetch_user_documents(); st.rerun()
+            st.divider()
+        st.subheader("Upload a New Document")
+        uploaded_file = st.file_uploader("Choose a file", type=['pdf', 'docx', 'txt'])
+        if uploaded_file:
+            if st.button("Analyze Document", type="primary", use_container_width=True):
+                with st.spinner("Uploading and starting analysis..."):
+                    headers = {"Authorization": f"Bearer {st.session_state.token}"}
+                    files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
+                    response = requests.post(f"{BACKEND_URL}/analyze", files=files, headers=headers)
+                    if response.status_code == 200:
+                        st.success(response.json().get("message", "Analysis started!"))
+                        time.sleep(1); fetch_user_documents(); st.rerun()
+                    else:
+                        st.error(f"Upload failed: {response.text}")
+        st.divider()
+        if st.session_state.current_document_id:
+            doc_id = st.session_state.current_document_id
+            if doc_id in st.session_state.uploaded_documents:
+                doc_data = st.session_state.uploaded_documents[doc_id]
+                if doc_data.get('analysis') is None: load_full_document_analysis(doc_id)
+                display_analysis_results(doc_data.get('analysis'), doc_data['title'])
+
+    elif st.session_state.page == "search":
+        st.title("🔎 Document Q&A")
+        if not st.session_state.uploaded_documents:
+            st.warning("Please upload a document first.")
+        else:
+            doc_options = {doc_id: info['title'] for doc_id, info in st.session_state.uploaded_documents.items()}
+            selected_doc_id = st.selectbox("Select a document:", options=list(doc_options.keys()), format_func=lambda doc_id: doc_options[doc_id])
+            question = st.text_area("Ask a question about the selected document:")
+            if st.button("Ask Question", type="primary", use_container_width=True):
+                if selected_doc_id and question:
+                    with st.spinner("Searching for the answer..."):
+                        headers = {"Authorization": f"Bearer {st.session_state.token}"}
                         payload = {"question": question}
-                        response = requests.post(api_url, json=payload, headers=headers)
+                        response = requests.post(f"{BACKEND_URL}/document/{selected_doc_id}/query", json=payload, headers=headers)
                         if response.status_code == 200:
                             result = response.json()
                             st.markdown('<div class="answer-box">', unsafe_allow_html=True)
-                            st.subheader("💡 Answer from your document:")
-                            st.write(result.get("answer", "No answer could be generated."))
+                            st.write(result.get("answer", "No answer found."))
                             st.markdown('</div>', unsafe_allow_html=True)
                         else:
                             st.error(f"Q&A failed: {response.text}")
-                    except Exception as e:
-                        st.error(f"An error occurred: {e}")
-            else:
-                st.warning("Please select a document and ask a question.")
 
-elif st.session_state.token and st.session_state.page == "scenarios":
-    st.title("🎭 What-If Scenario Analysis")
-    st.write("Ask hypothetical questions about your documents to understand potential outcomes.")
-    if not st.session_state.uploaded_documents:
-        st.warning("You need to upload at least one document to analyze a scenario.")
-    else:
-        doc_options = {doc_id: info['title'] for doc_id, info in st.session_state.uploaded_documents.items()}
-        selected_doc_id = st.selectbox("Select a document to base your scenario on:", options=list(doc_options.keys()), format_func=lambda doc_id: doc_options[doc_id])
-        scenario_question = st.text_area("Describe your scenario or ask your question:", height=150, placeholder="e.g., What if the client terminates the contract after 6 months?")
-        if st.button("Analyze Scenario", type="primary", use_container_width=True):
-            if selected_doc_id and scenario_question:
-                with st.spinner("AI is analyzing your scenario..."):
-                    try:
+    elif st.session_state.page == "scenarios":
+        st.title("🎭 What-If Scenario Analysis")
+        if not st.session_state.uploaded_documents:
+            st.warning("Please upload a document first.")
+        else:
+            doc_options = {doc_id: info['title'] for doc_id, info in st.session_state.uploaded_documents.items()}
+            selected_doc_id = st.selectbox("Select a document for the scenario:", options=list(doc_options.keys()), format_func=lambda doc_id: doc_options[doc_id])
+            scenario_question = st.text_area("Describe your scenario:")
+            if st.button("Analyze Scenario", type="primary", use_container_width=True):
+                if selected_doc_id and scenario_question:
+                    with st.spinner("AI is analyzing your scenario..."):
                         headers = {"Authorization": f"Bearer {st.session_state.token}"}
-                        api_url = f"http://localhost:8000/scenario/{selected_doc_id}"
                         payload = {"scenario_text": scenario_question}
-                        response = requests.post(api_url, json=payload, headers=headers)
+                        response = requests.post(f"{BACKEND_URL}/scenario/{selected_doc_id}", json=payload, headers=headers)
                         if response.status_code == 200:
                             result = response.json()
-                            st.subheader("AI-Powered Scenario Analysis")
-                            st.markdown(result.get("analysis", "No analysis could be generated."))
+                            st.markdown('<div class="answer-box">', unsafe_allow_html=True)
+                            st.write(result.get("analysis", "Could not analyze scenario."))
+                            st.markdown('</div>', unsafe_allow_html=True)
                         else:
                             st.error(f"Scenario analysis failed: {response.text}")
-                    except Exception as e:
-                        st.error(f"An error occurred: {e}")
-            else:
-                st.warning("Please select a document and describe your scenario.")
-
 else:
-    # Fallback for logged-out users
-    if st.session_state.token:
-        st.info("Select an option from the sidebar to get started.")
-    else:
-        st.error("Please log in to access this page.")
-        if st.button("Go to Login"):
-            st.session_state.page = "login"
-            st.rerun()
+    # Fallback for logged-out users on protected pages
+    st.error("Please log in to access the application.")
