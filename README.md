@@ -89,6 +89,7 @@ You need to run the backend and frontend simultaneously in two separate terminal
 You can now access the frontend at `http://localhost:8501`.
 
 DEPLOYED LINK : https://lexilens.streamlit.app/
+
 For support, please open an issue on GitHub or contact the development team.
 
 ---
