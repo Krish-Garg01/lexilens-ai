@@ -34,7 +34,7 @@ fileWatcherType = "auto"
 cookieSecret = "a-random-key-appears-here"
 
 # If false, will attempt to open a new browser tab on the local development machine when `streamlit run` is called. If true, will only print the URL to the terminal.
-headless = false
+headless = true
 
 # Automatically rerun script when the file is modified on disk.
 runOnSave = false
