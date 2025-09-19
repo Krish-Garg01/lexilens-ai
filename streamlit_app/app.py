@@ -185,6 +185,22 @@ def display_analysis_results(analysis_result, title):
     else:
         st.success("No high-risk clauses were detected.")
 
+def fetch_suggestions(doc_id):
+    """Fetches AI-generated question suggestions for a document."""
+    if not st.session_state.token or not doc_id:
+        return
+    try:
+        with st.spinner("Generating suggestions..."):
+            headers = {"Authorization": f"Bearer {st.session_state.token}"}
+            response = requests.get(f"{BACKEND_URL}/documents/{doc_id}/suggestions", headers=headers)
+            if response.status_code == 200:
+                st.session_state.suggestions = response.json()
+                st.session_state.last_suggestion_doc_id = doc_id
+            else:
+                st.session_state.suggestions = None
+    except Exception as e:
+        print(f"Error fetching suggestions: {e}")
+        st.session_state.suggestions = None
 # --- Page Routing ---
 with st.sidebar:
     st.title("⚖️ LexiLens AI")
@@ -340,12 +356,29 @@ elif st.session_state.token:
 
     elif st.session_state.page == "search":
         st.title("🔎 Document Q&A")
+        st.write("Select a document and ask a specific question to find information within it.")
         if not st.session_state.uploaded_documents:
             st.warning("Please upload a document first.")
         else:
             doc_options = {doc_id: info['title'] for doc_id, info in st.session_state.uploaded_documents.items()}
             selected_doc_id = st.selectbox("Select a document:", options=list(doc_options.keys()), format_func=lambda doc_id: doc_options[doc_id])
-            question = st.text_area("Ask a question about the selected document:")
+
+            # Fetch suggestions if the document changes
+            if selected_doc_id != st.session_state.last_suggestion_doc_id:
+                fetch_suggestions(selected_doc_id)
+                st.session_state.question_text = "" # Clear text area on doc change
+
+            question = st.text_area("Your Question:", key="qa_question_input", value=st.session_state.question_text)
+            st.session_state.question_text = question
+
+            # Display suggestions as clickable buttons
+            if st.session_state.suggestions and st.session_state.suggestions.get("qa_suggestions"):
+                st.write("Suggestions:")
+                cols = st.columns(3)
+                for i, suggestion in enumerate(st.session_state.suggestions["qa_suggestions"]):
+                    if cols[i % 3].button(suggestion, key=f"qa_sug_{i}"):
+                        st.session_state.question_text = suggestion
+                        st.rerun()
             if st.button("Ask Question", type="primary", use_container_width=True):
                 if selected_doc_id and question:
                     with st.spinner("Searching for the answer..."):
@@ -362,12 +395,30 @@ elif st.session_state.token:
 
     elif st.session_state.page == "scenarios":
         st.title("🎭 What-If Scenario Analysis")
+        st.write("Ask hypothetical questions about your documents to understand potential outcomes.")
         if not st.session_state.uploaded_documents:
             st.warning("Please upload a document first.")
         else:
             doc_options = {doc_id: info['title'] for doc_id, info in st.session_state.uploaded_documents.items()}
             selected_doc_id = st.selectbox("Select a document for the scenario:", options=list(doc_options.keys()), format_func=lambda doc_id: doc_options[doc_id])
-            scenario_question = st.text_area("Describe your scenario:")
+            
+            # Fetch suggestions if the document changes
+            if selected_doc_id != st.session_state.last_suggestion_doc_id:
+                fetch_suggestions(selected_doc_id)
+                st.session_state.scenario_text = "" # Clear text area on doc change
+
+            scenario_question = st.text_area("Describe your scenario:", key="scenario_question_input", value=st.session_state.scenario_text)
+            st.session_state.scenario_text = scenario_question
+
+            # Display suggestions as clickable buttons
+            if st.session_state.suggestions and st.session_state.suggestions.get("scenario_suggestions"):
+                st.write("Suggestions:")
+                cols = st.columns(3)
+                for i, suggestion in enumerate(st.session_state.suggestions["scenario_suggestions"]):
+                    if cols[i % 3].button(suggestion, key=f"scen_sug_{i}"):
+                        st.session_state.scenario_text = suggestion
+                        st.rerun()
+            
             if st.button("Analyze Scenario", type="primary", use_container_width=True):
                 if selected_doc_id and scenario_question:
                     with st.spinner("AI is analyzing your scenario..."):

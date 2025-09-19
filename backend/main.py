@@ -124,6 +124,9 @@ class NegotiateResponse(BaseModel):
     original_clause: str
     suggestions: List[str]
 
+class SuggestionResponse(BaseModel):
+    qa_suggestions: List[str]
+    scenario_suggestions: List[str]
 
 # --- Helper Functions ---
 def extract_text_from_pdf(file_path: str) -> str:
@@ -413,6 +416,52 @@ async def delete_document(
     db.commit()
     
     return {"message": "Document and its analyses deleted successfully"}
+
+@app.get("/documents/{document_id}/suggestions", response_model=SuggestionResponse, tags=["Analysis"])
+async def get_suggestions_for_document(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Generates relevant Q&A and What-If scenario questions for a document.
+    """
+    doc = db.query(Document).filter(Document.id == document_id, Document.owner_id == current_user.id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    suggestion_prompt = PromptTemplate.from_template(
+        """
+        You are an AI assistant analyzing a legal document. Your task is to generate insightful questions a user might have.
+        Based on the following document content, generate two lists of questions:
+        1.  `qa_suggestions`: Three questions that can be answered directly from the text (e.g., "What is the termination notice period?").
+        2.  `scenario_suggestions`: Three hypothetical "what-if" questions (e.g., "What happens if a payment is missed?").
+
+        Document Content (first 2000 characters):
+        "{content}"
+
+        Return ONLY a valid JSON object with two keys: "qa_suggestions" and "scenario_suggestions".
+        Example: {{"qa_suggestions": ["...", "..."], "scenario_suggestions": ["...", "..."]}}
+        """
+    )
+    
+    parser = StrOutputParser()
+    suggestion_chain = suggestion_prompt | llm | parser
+    
+    try:
+        # Limit content to keep the prompt efficient
+        content_snippet = doc.content[:2000]
+        response_str = suggestion_chain.invoke({"content": content_snippet})
+        response_json = json.loads(response_str.strip().replace("```json", "").replace("```", ""))
+        
+        return SuggestionResponse(
+            qa_suggestions=response_json.get("qa_suggestions", []),
+            scenario_suggestions=response_json.get("scenario_suggestions", [])
+        )
+    except Exception as e:
+        print(f"Suggestion generation error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate suggestions.")
+
 
 @app.get("/documents/{document_id}", response_model=DocumentDetail, tags=["Documents"])
 async def get_document(document_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
