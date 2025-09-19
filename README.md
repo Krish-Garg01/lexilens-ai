@@ -1,9 +1,3 @@
-Of course. It's a great idea to update your `README.md` to reflect the final, polished state of your project. A good README is essential for showing off your work.
-
-Here is a completely rewritten, professional `README.md` file that accurately represents all the features you've built and the final project structure.
-
------
-
 # LexiLens AI ⚖️
 
 **From Legal Chaos to Crystal Clarity.** LexiLens AI is a sophisticated, full-stack web application that leverages generative AI to deconstruct, analyze, and simplify complex legal documents. It empowers users to understand contracts, identify risks, and negotiate fairer terms with confidence.
@@ -93,3 +87,11 @@ You need to run the backend and frontend simultaneously in two separate terminal
     ```
 
 You can now access the frontend at `http://localhost:8501`.
+
+DEPLOYED LINK : https://lexilens.streamlit.app/
+
+For support, please open an issue on GitHub or contact the development team.
+
+---
+
+**Built with ❤️ for legal professionals worldwide**
