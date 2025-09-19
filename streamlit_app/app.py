@@ -23,6 +23,14 @@ if "uploaded_documents" not in st.session_state:
     st.session_state.uploaded_documents = {}
 if "current_document_id" not in st.session_state:
     st.session_state.current_document_id = None
+if "suggestions" not in st.session_state:
+    st.session_state.suggestions = None
+if "last_suggestion_doc_id" not in st.session_state:
+    st.session_state.last_suggestion_doc_id = None
+if "question_text" not in st.session_state:
+    st.session_state.question_text = ""
+if "scenario_text" not in st.session_state:
+    st.session_state.scenario_text = ""
 
 # --- Custom CSS for modern look ---
 st.markdown("""
